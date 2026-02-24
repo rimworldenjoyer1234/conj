@@ -1,0 +1,333 @@
+# respecto osr
+
+`Makefile.osr` compila el ejecutable **`jitterentropy-osr`**, que es una **herramienta de calibración/diagnóstico**. No es el evaluador \ac{SP800-90B} y no te va a dar directamente la *min-entropy* “como en el paper”.
+
+### Qué hace `jitterentropy-osr`
+
+Sirve para estimar, de forma interna y heurística, **qué OSR (oversampling rate)** te conviene en una máquina dada bajo ciertas condiciones, midiendo el comportamiento del “raw jitter” durante un tiempo objetivo.
+
+Por eso su “usage” es:
+
+`./jitterentropy-osr <number of measurements> <target time> [opciones…]`
+
+y te imprime cosas como “linear estimate”, “cutoff”, “upper bound…”.
+
+### Para qué te es útil en la práctica
+
+* **Tanteo rápido**: ver si el entorno está “bien” o si parece que el jitter es pobre (si te da OSR enorme, es una señal de alarma).
+* **Comparar modos**: ver cómo cambia esa estimación si activas/desactivas memoria (`--disable-memory-access`), fuerzas timer interno, cambias `--max-mem`, etc.
+* **Debug**: cuando el RNG falla health tests o el rendimiento es raro, te ayuda a identificar qué opción te está matando.
+
+### Para qué NO sirve
+
+* **No sustituye** a la estimación formal de min-entropy con \ac{SP800-90B}.
+* No es el número que debes citar en un informe “paper-style”. Para eso usas `jitterentropy-hashtime` + `validation-runtime/validation-restart`.
+
+### Cómo encaja con tu flujo “optimizar OSR con min-entropy”
+
+1. (Opcional) ejecutas `jitterentropy-osr` para tener una idea de rango de OSR y detectar problemas.
+2. haces el barrido real con `jitterentropy-hashtime` y calculas (H_{\min}) con NIST.
+3. eliges `OSR = ceil(1/H_{\min})` (o el mínimo que cumpla con margen).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# analize options
+`analyze_options.sh` es el “modo barrido” del repo: en vez de que tú ejecutes a mano `hashtime`/validación cambiando flags, el script **prueba muchas combinaciones de parámetros** (OSR, memoria, loops, timer interno, etc.), ejecuta la grabación y luego corre el análisis NIST, y te deja resultados comparables.
+
+Hay **dos** (en realidad tres) “analyze_options” distintos, según fase:
+
+## 1) `recording_userspace/analyze_options.sh`
+
+**Para qué sirve:** generar *muchos datasets raw* con distintas opciones.
+Crea ficheros en `tests/raw-entropy/results-measurements/` con nombres que codifican la configuración.
+
+Qué barre típicamente:
+
+* diferentes OSR
+* distintas opciones de memoria (`--max-mem`, mem access on/off)
+* loops (`--loopcnt` / hash loops)
+* flags tipo `--force-fips`, `--ntg1`, timer interno, etc.
+  (Depende de la versión exacta del script.)
+
+Uso:
+
+```bash id="w6l0tr"
+cd tests/raw-entropy/recording_userspace
+./analyze_options.sh
+```
+
+## 2) `validation-runtime/analyze_options.sh`
+
+**Para qué sirve:** coge todos esos datasets y calcula **min-entropy runtime** con `ea_non_iid`.
+Deja salidas en algo tipo `tests/raw-entropy/results-runtime-multi/` o en subcarpetas análogas (según versión).
+
+Uso:
+
+```bash id="f5d7kn"
+cd ../validation-runtime
+./analyze_options.sh
+```
+
+## 3) `validation-restart/analyze_options.sh`
+
+**Para qué sirve:** lo mismo pero para **restart** con `ea_restart`.
+Deja salidas en `results-restart-multi/` (o similar).
+
+Uso:
+
+```bash id="r3csh4"
+cd ../validation-restart
+./analyze_options.sh
+```
+
+---
+
+# Qué te entrega al final
+
+Normalmente:
+
+* un directorio por combinación probada,
+* ficheros `*.minentropy_...` (como cuando haces `processdata.sh`),
+* y, en algunas versiones, un resumen tipo “tabla” o CSV/log para comparar rápido.
+
+La idea es que puedas contestar:
+
+* “¿Qué pasa si desactivo memoria?”
+* “¿Qué OSR mínimo me aguanta runtime y restart?”
+* “¿Qué configuración maximiza H sin matar el rendimiento?”
+
+---
+
+# Cuándo usarlo (y cuándo NO)
+
+✅ Úsalo cuando:
+
+* quieras un estudio sistemático (tu caso),
+* no sepas qué parámetro te está limitando.
+
+❌ No lo uses tal cual (sin tocarlo) cuando:
+
+* estás en VM y cada corrida es lenta,
+* necesitas control fino del tamaño de muestra,
+* quieres empezar con pocas combinaciones.
+
+---
+
+# Recomendación práctica (para no esperar horas)
+
+Antes de lanzar el barrido completo:
+
+1. Abre el script y mira qué va a probar:
+
+```bash id="7xku2y"
+cd tests/raw-entropy/recording_userspace
+sed -n '1,200p' analyze_options.sh
+```
+
+2. Recorta:
+
+* número de muestras (p.ej. 200k en vez de 1M),
+* lista de OSR (p.ej. 2,3,4,6),
+* y deja solo 1–2 variantes de memoria al principio.
+
+Así en 10–20 minutos ya tienes una primera tabla.
+
+---
+
+Si me pegas el contenido de **las 80 primeras líneas** de tu `recording_userspace/analyze_options.sh`, te digo exactamente qué combinaciones está barriendo en tu versión y te lo dejo “recortado” para tu Ubuntu VM (rápido pero aún representativo).
+
+
+
+Vale — con **Ubuntu 24.04.4 LTS** (Noble) en **VM** puedes hacer el pipeline kernel, pero casi siempre te vas a encontrar con esto:
+
+* el kernel trae `CONFIG_CRYPTO_JITTERENTROPY` (la fuente existe),
+* pero **no** trae `CONFIG_CRYPTO_JITTERENTROPY_TESTINTERFACE` (la interfaz de test para sacar *raw* por `debugfs`), porque esa interfaz pone el RNG en un modo inseguro mientras grabas y por eso suele venir desactivada en kernels de distro. ([cateee.net][1])
+
+Aun así, aquí va el pipeline completo “desde 0”, incluyendo el caso en el que tengas que compilar tu propio kernel.
+
+---
+
+## 0) Pre-requisitos en la VM
+
+```bash
+sudo apt update
+sudo apt install -y git build-essential python3 \
+  flex bison bc fakeroot dwarves \
+  libssl-dev libelf-dev libncurses-dev
+sudo mount -t debugfs none /sys/kernel/debug 2>/dev/null || true
+```
+
+---
+
+## 1) Comprobar si tu kernel ya permite extraer raw del Jitter RNG
+
+### 1.1 Ver configuración del kernel
+
+```bash
+zgrep -E "CRYPTO_JITTERENTROPY|CRYPTO_JITTERENTROPY_TESTINTERFACE|CRYPTO_USER_API_RNG" /proc/config.gz 2>/dev/null || true
+```
+
+### 1.2 Ver si existe el árbol debugfs del test interface
+
+```bash
+ls -l /sys/kernel/debug/jitterentropy_testing 2>/dev/null || echo "NO test interface"
+```
+
+* Si ves `/sys/kernel/debug/jitterentropy_testing/...` → puedes ir a la sección **3**.
+* Si sale “NO test interface” → tienes que ir a la sección **2** (kernel custom).
+
+---
+
+## 2) Si NO está activado: compilar e instalar un kernel Ubuntu con test interface
+
+Canonical documenta el flujo para construir el kernel de Ubuntu: en Noble necesitas tener `deb-src` habilitado y usar `apt source linux` / `apt build-dep linux`. ([canonical-kteam-docs.readthedocs-hosted.com][2])
+
+### 2.1 Habilitar fuentes `deb-src` (Noble)
+
+Edita `/etc/apt/sources.list.d/ubuntu.sources` y en la línea `Types:` añade `deb-src` (quedará `Types: deb deb-src`). Luego:
+
+```bash
+sudo apt update
+```
+
+(Esto es exactamente lo que pide la guía de Canonical para Noble 24.04). ([canonical-kteam-docs.readthedocs-hosted.com][2])
+
+### 2.2 Descargar el source del kernel de Ubuntu y dependencias
+
+```bash
+sudo apt build-dep -y linux
+apt source linux
+cd linux-*/
+```
+
+### 2.3 Activar `CONFIG_CRYPTO_JITTERENTROPY_TESTINTERFACE`
+
+Abre menú de configuración y activa la opción:
+
+```bash
+make menuconfig
+```
+
+Busca “**CPU Jitter RNG Test Interface**” y actívala como `y` o `m`:
+
+* `CONFIG_CRYPTO_JITTERENTROPY_TESTINTERFACE=y` (o `m`) ([kernelconfig.io][3])
+
+### 2.4 Compilar e instalar el kernel
+
+En Ubuntu, una vía común es construir paquetes `.deb` e instalarlos. La forma exacta varía por rama, pero lo importante es: **arrancar la VM con ese kernel** y comprobar que aparece `jitterentropy_testing` en debugfs.
+
+Tras instalar y reiniciar en el kernel nuevo, vuelve a ejecutar:
+
+```bash
+sudo mount -t debugfs none /sys/kernel/debug 2>/dev/null || true
+ls -l /sys/kernel/debug/jitterentropy_testing
+```
+
+---
+
+## 3) Extraer raw del kernel (runtime kernelspace)
+
+Una vez exista `/sys/kernel/debug/jitterentropy_testing`, ya puedes grabar raw.
+
+### 3.1 Clonar jitterentropy-library y compilar el extractor
+
+```bash
+cd ~
+git clone https://github.com/smuellerDD/jitterentropy-library.git
+cd jitterentropy-library/tests/raw-entropy/recording_runtime_kernelspace
+```
+
+En kernels modernos, el test interface puede exponer timestamps de 64-bit (y hay cambios históricos ahí). Compila el extractor con soporte u64:
+
+```bash
+gcc -Wall -Wextra -pedantic -DRAW_DATATYPE_U64 -o getrawentropy getrawentropy.c
+```
+
+### 3.2 Grabar 1,000,001 muestras raw desde debugfs
+
+```bash
+cd ..
+mkdir -p results-measurements
+sudo mount -t debugfs none /sys/kernel/debug 2>/dev/null || true
+
+sudo ./recording_runtime_kernelspace/getrawentropy \
+  -f /sys/kernel/debug/jitterentropy_testing/jent_raw_hires \
+  -s 1000001 \
+  > results-measurements/jent-raw-noise-0001.data
+```
+
+---
+
+## 4) Pasar SP800-90B (NIST EntropyAssessment) sobre ese raw
+
+### 4.1 Clonar y compilar la herramienta NIST
+
+```bash
+cd ~/jitterentropy-library/tests/raw-entropy
+git clone https://github.com/usnistgov/SP800-90B_EntropyAssessment.git
+cd SP800-90B_EntropyAssessment/cpp
+make non_iid restart
+```
+
+La suite es la implementación de referencia usada para estimar min-entropy según SP800-90B. ([canonical-kteam-docs.readthedocs-hosted.com][2])
+
+### 4.2 Analizar “runtime”
+
+```bash
+cd ../../validation-runtime
+./processdata.sh
+```
+
+Luego busca el valor final (min-entropy por muestra/time-delta) en `results-analysis-runtime/*minentropy*`:
+
+```bash
+grep -R "min(H_original, 8 X H_bitstring)" -n ../results-analysis-runtime | tail -n 5
+```
+
+---
+
+## 5) (Opcional) Restart kernelspace (early boot)
+
+Esto es el “hard mode”: capturar los primeros eventos de entropía durante arranque y repetir muchos boots. En el repo te lo orquestan con systemd (`recording_restart_kernelspace/boottime_test_record.service` y scripts). Úsalo solo si tu claim incluye *early boot*.
+
+---
+
+## 6) Qué significa “validación correcta” en kernel
+
+* Si vas a afirmar “el **kernel** aporta X min-entropy por muestra” → necesitas este pipeline kernelspace, porque mide el raw del kernel.
+* Si solo quieres OSR para una app (userspace) → no necesitas recompilar kernel.
+
+---
+
+Si me pegas la salida de estos dos comandos en tu Ubuntu 24.04.4 VM:
+
+```bash
+uname -a
+zgrep -E "CRYPTO_JITTERENTROPY|CRYPTO_JITTERENTROPY_TESTINTERFACE|CRYPTO_USER_API_RNG" /proc/config.gz 2>/dev/null || true
+```
+
+te digo si tienes suerte (test interface ya activo) o si toca el paso 2, y cuál es la opción exacta en `menuconfig` para tu árbol.
+
+[1]: https://cateee.net/lkddb/web-lkddb/CRYPTO_JITTERENTROPY_TESTINTERFACE.html?utm_source=chatgpt.com "CONFIG_CRYPTO_JITTERENT..."
+[2]: https://canonical-kteam-docs.readthedocs-hosted.com/en/public/how-to/build-kernel.html?utm_source=chatgpt.com "How to build the Ubuntu Linux Kernel - Read the Docs Business"
+[3]: https://www.kernelconfig.io/config_crypto_jitterentropy_testinterface?utm_source=chatgpt.com "CPU Jitter RNG Test Interface"
+
+
