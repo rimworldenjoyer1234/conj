@@ -1,0 +1,18 @@
+import pathlib
+base = pathlib.Path("results-measurements")
+in_path = base / "jent-raw-noise-0001.data"
+out_ff = base / "noise_ff_8.bin"
+out_0f = base / "noise_0f_4.bin"
+
+vals = []
+with in_path.open("r", encoding="utf-8", errors="ignore") as f:
+    for line in f:
+        line=line.strip()
+        if line:
+            vals.append(int(line))
+
+out_ff.write_bytes(bytes([v & 0xFF for v in vals]))
+out_0f.write_bytes(bytes([v & 0x0F for v in vals]))
+print("Samples:", len(vals))
+print("FF8:", out_ff.stat().st_size, "bytes")
+print("0F4:", out_0f.stat().st_size, "bytes")
