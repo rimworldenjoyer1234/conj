@@ -16,3 +16,28 @@ out_0f.write_bytes(bytes([v & 0x0F for v in vals]))
 print("Samples:", len(vals))
 print("FF8:", out_ff.stat().st_size, "bytes")
 print("0F4:", out_0f.stat().st_size, "bytes")
+
+
+En Linux sí se convertía, solo que lo hacía automáticamente el pipeline validation-runtime/processdata.sh, y por eso no lo viste.
+
+Qué pasa en el flujo Linux del repo
+
+Tu fichero jent-raw-noise-0001.data contiene enteros (deltas). La herramienta de NIST (ea_non_iid) no trabaja con “enteros por línea” como tal: espera un stream de símbolos (normalmente bytes) y tú le dices cuántos bits por símbolo usar. Por eso, en el repo:
+
+processdata.sh / processdata_helper.sh leen el .data
+
+extraen los LSB (por ejemplo máscara 0xFF para 8 bits o 0x0F para 4 bits)
+
+generan ficheros intermedios tipo *.FFbit, *.0Fbitout.data, etc.
+
+y luego llaman a ea_non_iid / ea_restart con esos ficheros ya en el formato adecuado.
+
+En Windows, como no estás usando esos scripts bash, tienes que hacer tú esa conversión (a .bin o al formato que decidas), porque ea_non_iid necesita símbolos.
+
+Por qué mi conversión a .bin es equivalente
+
+Lo que te propuse es exactamente lo mismo conceptualmente:
+
+8-bit: byte = delta & 0xFF → un byte por muestra
+
+4-bit: nibble = delta & 0x0F → (idealmente) una muestra de 4 bits; yo lo empaqueto 2 nibbles/byte para tener fichero binario compacto
